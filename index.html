@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>星际小飞船</title>
+<style>
+  html,body{margin:0;height:100%;background:#0b0e1a;overflow:hidden;font-family:system-ui,"PingFang SC","Microsoft YaHei",sans-serif;color:#e8ecff;touch-action:none;user-select:none}
+  canvas{display:block;margin:0 auto;background:#0b0e1a}
+  #ui{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
+  .panel{pointer-events:auto;text-align:center;background:rgba(15,20,40,.88);border:2px solid #3b4a8a;border-radius:14px;padding:26px 30px;max-width:320px}
+  h1{margin:0 0 8px;font-size:28px;color:#7cf0ff}
+  p{margin:6px 0;font-size:14px;line-height:1.6;color:#b8c2ee}
+  button{margin-top:14px;font-size:18px;padding:10px 28px;border:0;border-radius:10px;background:#7cf0ff;color:#0b0e1a;font-weight:700;cursor:pointer}
+  button:active{transform:scale(.96)}
+  .hide{display:none}
+  #skills{position:fixed;right:14px;bottom:20px;display:flex;flex-direction:column;gap:12px;z-index:5}
+  .sk{width:64px;height:64px;border-radius:50%;border:2px solid #7cf0ff;background:rgba(20,30,60,.8);color:#e8ecff;font-size:13px;font-weight:700;display:flex;flex-direction:column;align-items:center;justify-content:center;position:relative;overflow:hidden;cursor:pointer;touch-action:none}
+  .sk .cdm{position:absolute;left:0;right:0;bottom:0;background:rgba(0,0,0,.6)}
+  .sk span{position:relative;line-height:1.2}
+  .sk.ready{box-shadow:0 0 12px #7cf0ff}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <div class="panel" id="start">
+    <h1>星际小飞船</h1>
+    <p>躲开陨石、击落敌机，吃道具变强！</p>
+    <p>电脑：← → ↑ ↓ / WASD 移动，自动射击<br>J：护盾　K：清屏炸弹<br>手机：拖动飞船，点右下角按钮放技能</p>
+    <p>5 秒没受伤会自动回血</p>
+    <p id="best0"></p>
+    <button id="go">开始游戏</button>
+  </div>
+  <div class="panel hide" id="over">
+    <h1>游戏结束</h1>
+    <p id="final"></p>
+    <button id="again">再来一局</button>
+  </div>
+</div>
+<div id="skills" class="hide">
+  <div class="sk" id="skS"><div class="cdm" id="cdS"></div><span>🛡️<br>护盾 J</span></div>
+  <div class="sk" id="skB"><div class="cdm" id="cdB"></div><span>💥<br>炸弹 K</span></div>
+</div>
+<script>
+const cv=document.getElementById('c'),ctx=cv.getContext('2d');
+let W,H;
+function resize(){W=cv.width=Math.min(innerWidth,520);H=cv.height=innerHeight;}
+addEventListener('resize',resize);resize();
+
+let best=0;try{best=+localStorage.getItem('ship_best')||0}catch(e){}
+const $=id=>document.getElementById(id);
+$('best0').textContent=best?('最高分：'+best):'';
+
+const keys={};
+addEventListener('keydown',e=>{const k=e.key.toLowerCase();keys[k]=true;if(e.key.startsWith('Arrow'))e.preventDefault();
+  if(running&&(k==='j'||k==='q'))useShield();
+  if(running&&(k==='k'||k==='e'))useBomb();});
+addEventListener('keyup',e=>keys[e.key.toLowerCase()]=false);
+
+let touch=null;
+cv.addEventListener('pointerdown',e=>{touch={x:e.offsetX,y:e.offsetY,px:P.x,py:P.y}});
+cv.addEventListener('pointermove',e=>{if(touch){P.x=touch.px+(e.offsetX-touch.x)*1.3;P.y=touch.py+(e.offsetY-touch.y)*1.3}});
+addEventListener('pointerup',()=>touch=null);
+
+let P,bullets,enemies,eBullets,items,parts,stars,score,running,t,shake;
+function reset(){
+  P={x:W/2,y:H-90,r:12,hp:5,inv:0,gun:1,gunT:0,cd:0,
+     shield:0,shieldCd:0,bombCd:0,calm:0,regen:0,flash:0};
+  bullets=[];enemies=[];eBullets=[];items=[];parts=[];score=0;t=0;shake=0;
+  stars=Array.from({length:70},()=>({x:Math.random()*W,y:Math.random()*H,s:Math.random()*2+.5}));
+}
+reset();
+
+function boom(x,y,c,n=14){for(let i=0;i<n;i++){const a=Math.random()*6.28,v=Math.random()*4+1;parts.push({x,y,vx:Math.cos(a)*v,vy:Math.sin(a)*v,l:30,c})}}
+const hit=(a,b)=>(a.x-b.x)**2+(a.y-b.y)**2<(a.r+b.r)**2;
+
+// ===== 技能参数（想调难度就改这里）=====
+const SHIELD_TIME=240, SHIELD_CD=600;   // 护盾持续 4 秒，冷却 10 秒
+const BOMB_CD=1200;                     // 炸弹冷却 20 秒
+const REGEN_WAIT=300, REGEN_EVERY=480;  // 5 秒没受伤后，每 8 秒回 1 血
+const MAX_HP=6;
+
+function useShield(){
+  if(P.shieldCd>0)return;
+  P.shield=SHIELD_TIME;P.shieldCd=SHIELD_CD;
+}
+function useBomb(){
+  if(P.bombCd>0)return;
+  P.bombCd=BOMB_CD;P.flash=20;shake=10;
+  eBullets.forEach(b=>boom(b.x,b.y,'#ff6b8a',3));eBullets=[];
+  enemies.forEach(e=>{e.hp-=3});
+}
+
+function spawn(){
+  const lvl=1+Math.floor(t/1800);   // 难度上升变慢：每 30 秒一级
+  if(Math.random()<0.015+lvl*0.004){
+    const type=Math.random();
+    if(type<0.6) enemies.push({k:'rock',x:Math.random()*W,y:-20,r:12+Math.random()*14,vy:1.2+Math.random()*1.2+lvl*.15,vx:(Math.random()-.5),hp:2,rot:0});
+    else if(type<0.9) enemies.push({k:'ship',x:Math.random()*(W-40)+20,y:-20,r:14,vy:1+lvl*.1,vx:0,hp:3,cd:90+Math.random()*60,ph:Math.random()*6});
+    else enemies.push({k:'zig',x:Math.random()*W,y:-20,r:11,vy:2+lvl*.15,vx:2.5,hp:1});
+  }
+}
+
+function update(){
+  t++;
+  const sp=5;
+  if(keys['arrowleft']||keys['a'])P.x-=sp;
+  if(keys['arrowright']||keys['d'])P.x+=sp;
+  if(keys['arrowup']||keys['w'])P.y-=sp;
+  if(keys['arrowdown']||keys['s'])P.y+=sp;
+  P.x=Math.max(P.r,Math.min(W-P.r,P.x));P.y=Math.max(P.r,Math.min(H-P.r,P.y));
+  if(P.inv>0)P.inv--;
+  if(P.gunT>0&&--P.gunT===0)P.gun=1;
+  if(P.shield>0)P.shield--;
+  if(P.shieldCd>0)P.shieldCd--;
+  if(P.bombCd>0)P.bombCd--;
+  if(P.flash>0)P.flash--;
+  // 自动回血
+  P.calm++;
+  if(P.calm>REGEN_WAIT&&P.hp<MAX_HP){
+    if(++P.regen>=REGEN_EVERY){P.regen=0;P.hp++;boom(P.x,P.y,'#7cffa0',10)}
+  }else P.regen=0;
+
+  if(--P.cd<=0){
+    P.cd=9;
+    const spread=P.gun===1?[0]:P.gun===2?[-6,6]:[-10,0,10];
+    spread.forEach(o=>bullets.push({x:P.x+o,y:P.y-16,vx:o*.05,vy:-10,r:4}));
+  }
+  stars.forEach(s=>{s.y+=s.s;if(s.y>H){s.y=0;s.x=Math.random()*W}});
+  bullets.forEach(b=>{b.x+=b.vx;b.y+=b.vy});
+  bullets=bullets.filter(b=>b.y>-10);
+
+  spawn();
+  enemies.forEach(e=>{
+    e.y+=e.vy;
+    if(e.k==='rock'){e.x+=e.vx;e.rot+=.03}
+    if(e.k==='zig'){e.x+=e.vx;if(e.x<10||e.x>W-10)e.vx*=-1}
+    if(e.k==='ship'){e.x+=Math.sin(t/30+e.ph)*1.5;
+      // 敌方子弹：基本直线往下，只稍微偏向玩家（不再精准追踪）
+      if(--e.cd<=0&&e.y<H*0.6){e.cd=150+Math.random()*60;
+        const dx=Math.max(-1,Math.min(1,(P.x-e.x)/200));
+        eBullets.push({x:e.x,y:e.y+10,vx:dx*0.8,vy:2.6,r:5})}}
+    bullets.forEach(b=>{if(!b.dead&&hit(b,e)){b.dead=1;e.hp--;boom(b.x,b.y,'#ffe27a',3)}});
+    if(e.hp<=0&&!e.dead){e.dead=1;score+=e.k==='ship'?30:e.k==='zig'?20:10;boom(e.x,e.y,e.k==='rock'?'#c9a27a':'#ff6b8a');shake=6;
+      if(Math.random()<0.2)items.push({x:e.x,y:e.y,r:10,k:Math.random()<.6?'gun':'hp'})}
+    if(!e.dead&&hit(e,P)){e.dead=1;boom(e.x,e.y,'#ff6b8a');hurt()}
+  });
+  bullets=bullets.filter(b=>!b.dead);
+  enemies=enemies.filter(e=>!e.dead&&e.y<H+40);
+
+  const shieldBody={x:P.x,y:P.y,r:P.shield>0?32:P.r};
+  eBullets.forEach(b=>{b.x+=b.vx;b.y+=b.vy;if(hit(b,shieldBody)){b.dead=1;if(P.shield>0)boom(b.x,b.y,'#7cf0ff',4);else hurt()}});
+  eBullets=eBullets.filter(b=>!b.dead&&b.y<H+10&&b.y>-10&&b.x>-10&&b.x<W+10);
+
+  items.forEach(i=>{i.y+=1.8;if(hit(i,P)){i.dead=1;
+    if(i.k==='gun'){P.gun=Math.min(3,P.gun+1);P.gunT=600}else P.hp=Math.min(MAX_HP,P.hp+1);
+    boom(i.x,i.y,'#7cffa0',10)}});
+  items=items.filter(i=>!i.dead&&i.y<H+20);
+
+  parts.forEach(p=>{p.x+=p.vx;p.y+=p.vy;p.vx*=.95;p.vy*=.95;p.l--});
+  parts=parts.filter(p=>p.l>0);
+  if(t%60===0)score++;
+  if(shake>0)shake--;
+}
+
+function hurt(){
+  if(P.inv>0||P.shield>0)return;
+  P.calm=0;P.regen=0;
+  P.hp--;P.inv=120;shake=12;boom(P.x,P.y,'#7cf0ff',20);
+  if(P.hp<=0)gameOver();
+}
+
+function draw(){
+  ctx.save();
+  if(shake)ctx.translate((Math.random()-.5)*shake,(Math.random()-.5)*shake);
+  ctx.fillStyle='#0b0e1a';ctx.fillRect(-20,-20,W+40,H+40);
+  stars.forEach(s=>{ctx.fillStyle=`rgba(255,255,255,${s.s/3})`;ctx.fillRect(s.x,s.y,s.s,s.s)});
+
+  ctx.fillStyle='#ffe27a';bullets.forEach(b=>ctx.fillRect(b.x-2,b.y-6,4,12));
+  ctx.fillStyle='#ff6b8a';eBullets.forEach(b=>{ctx.beginPath();ctx.arc(b.x,b.y,b.r,0,7);ctx.fill()});
+
+  enemies.forEach(e=>{
+    ctx.save();ctx.translate(e.x,e.y);
+    if(e.k==='rock'){ctx.rotate(e.rot);ctx.fillStyle='#8a6f55';ctx.beginPath();
+      for(let i=0;i<8;i++){const a=i/8*6.28,r=e.r*(i%2?.8:1);ctx.lineTo(Math.cos(a)*r,Math.sin(a)*r)}ctx.fill();
+      ctx.fillStyle='#6b5440';ctx.beginPath();ctx.arc(e.r*.25,-e.r*.2,e.r*.25,0,7);ctx.fill()}
+    else if(e.k==='ship'){ctx.fillStyle='#ff6b8a';ctx.beginPath();ctx.moveTo(0,e.r);ctx.lineTo(-e.r,-e.r*.6);ctx.lineTo(0,-e.r*.2);ctx.lineTo(e.r,-e.r*.6);ctx.fill();
+      ctx.fillStyle='#fff';ctx.fillRect(-2,0,4,4)}
+    else{ctx.fillStyle='#c48aff';ctx.beginPath();ctx.moveTo(0,e.r);ctx.lineTo(-e.r,0);ctx.lineTo(0,-e.r);ctx.lineTo(e.r,0);ctx.fill()}
+    ctx.restore();
+  });
+
+  items.forEach(i=>{ctx.fillStyle=i.k==='gun'?'#ffe27a':'#7cffa0';ctx.beginPath();ctx.arc(i.x,i.y,i.r,0,7);ctx.fill();
+    ctx.fillStyle='#0b0e1a';ctx.font='bold 12px sans-serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(i.k==='gun'?'P':'+',i.x,i.y+1)});
+
+  parts.forEach(p=>{ctx.globalAlpha=p.l/30;ctx.fillStyle=p.c;ctx.fillRect(p.x-2,p.y-2,4,4)});ctx.globalAlpha=1;
+
+  if(running&&!(P.inv>0&&Math.floor(t/5)%2)){
+    ctx.save();ctx.translate(P.x,P.y);
+    ctx.fillStyle='#ff9f43';ctx.beginPath();ctx.moveTo(-5,12);ctx.lineTo(0,18+Math.random()*8);ctx.lineTo(5,12);ctx.fill();
+    ctx.fillStyle='#7cf0ff';ctx.beginPath();ctx.moveTo(0,-18);ctx.lineTo(-14,12);ctx.lineTo(0,6);ctx.lineTo(14,12);ctx.fill();
+    ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(0,-3,3.5,0,7);ctx.fill();
+    ctx.restore();
+  }
+  if(running&&P.shield>0){
+    const blink=P.shield<60&&Math.floor(t/6)%2;
+    if(!blink){ctx.strokeStyle='#7cf0ff';ctx.lineWidth=3;ctx.globalAlpha=.8;
+      ctx.beginPath();ctx.arc(P.x,P.y,32,0,7);ctx.stroke();
+      ctx.fillStyle='rgba(124,240,255,.12)';ctx.fill();ctx.globalAlpha=1}
+  }
+  ctx.restore();
+  if(P.flash>0){ctx.fillStyle=`rgba(255,240,200,${P.flash/25})`;ctx.fillRect(0,0,W,H)}
+
+  if(running){
+    ctx.fillStyle='#e8ecff';ctx.font='bold 18px sans-serif';ctx.textAlign='left';ctx.textBaseline='top';
+    ctx.fillText('分数 '+score,12,12);
+    ctx.fillStyle='#ff6b8a';ctx.fillText('♥'.repeat(P.hp),12,36);
+    let y=60;ctx.font='14px sans-serif';
+    if(P.calm>REGEN_WAIT&&P.hp<MAX_HP){ctx.fillStyle='#7cffa0';ctx.fillText('回血中 '+Math.ceil((REGEN_EVERY-P.regen)/60)+'s',12,y);y+=20}
+    if(P.gun>1){ctx.fillStyle='#ffe27a';ctx.fillText('火力 Lv'+P.gun+'  '+Math.ceil(P.gunT/60)+'s',12,y)}
+    // 技能按钮冷却显示
+    $('cdS').style.height=(P.shieldCd/SHIELD_CD*100)+'%';
+    $('cdB').style.height=(P.bombCd/BOMB_CD*100)+'%';
+    $('skS').classList.toggle('ready',P.shieldCd<=0);
+    $('skB').classList.toggle('ready',P.bombCd<=0);
+  }
+}
+
+function loop(){if(running)update();else{stars.forEach(s=>{s.y+=s.s*.5;if(s.y>H)s.y=0});parts.forEach(p=>{p.x+=p.vx;p.y+=p.vy;p.l--});parts=parts.filter(p=>p.l>0)}
+  draw();requestAnimationFrame(loop)}
+
+function start(){reset();running=true;$('start').classList.add('hide');$('over').classList.add('hide');$('skills').classList.remove('hide')}
+function gameOver(){running=false;$('skills').classList.add('hide');
+  if(score>best){best=score;try{localStorage.setItem('ship_best',best)}catch(e){}}
+  $('final').innerHTML='本局得分：<b>'+score+'</b><br>最高分：'+best;
+  setTimeout(()=>$('over').classList.remove('hide'),600)}
+$('go').onclick=start;$('again').onclick=start;
+$('skS').addEventListener('pointerdown',e=>{e.stopPropagation();if(running)useShield()});
+$('skB').addEventListener('pointerdown',e=>{e.stopPropagation();if(running)useBomb()});
+addEventListener('keydown',e=>{if(!running&&(e.key===' '||e.key==='Enter'))start()});
+loop();
+</script>
+</body>
+</html>
