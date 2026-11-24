@@ -4,7 +4,7 @@
 
 ## 🎮 在线试玩
 
-👉 **https://jianxilim.github.io/spaceship_game/**
+👉 **https://jianxilim.github.io/spaceship_go/**
 
 ## 🕹️ 操作方式
 
